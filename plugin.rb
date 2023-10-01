@@ -4,7 +4,7 @@
 # about: Provides full name in mentions
 # version: 0.1
 # authors: Thomas Kalka 
-# url: https://github.com/thoka/discourse-provide-full-name-in-mentsions
+# url: https://github.com/thoka/discourse-provide-full-name-in-mentions
 
 require_dependency 'pretty_text'
 
