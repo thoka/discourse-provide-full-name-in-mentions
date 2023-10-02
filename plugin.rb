@@ -57,7 +57,7 @@ module ::PrettyText
         SELECT
           :group_type AS type,
           lower(name) AS handle,
-          title AS full_name
+          full_name
         FROM groups
       )
       UNION
@@ -65,7 +65,7 @@ module ::PrettyText
         SELECT
           :group_mentionable_type AS type,
           lower(name) AS handle,
-          title AS full_name
+          full_name
         FROM groups
         WHERE lower(name) IN (:names) AND (#{Group.mentionable_sql_clause(include_public: false)})
       )
