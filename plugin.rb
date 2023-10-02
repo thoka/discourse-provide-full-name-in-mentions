@@ -2,7 +2,7 @@
 
 # name: discourse-provide-full-name-in-mentions
 # about: Provides full name in mentions
-# version: 0.1
+# version: 0.1.1
 # authors: Thomas Kalka 
 # url: https://github.com/thoka/discourse-provide-full-name-in-mentions
 
