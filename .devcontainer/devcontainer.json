@@ -1,0 +1,45 @@
+// Dev container for working on this plugin against a Discourse core checkout.
+//
+// It expects core to be cloned as a SIBLING of this repo:
+//
+//   <parent>/discourse                                  <- core
+//   <parent>/discourse-provide-full-name-in-mentions    <- this repo
+//
+// The whole <parent> directory is bound to /workspace, rather than just core.
+// That is deliberate: plugins/discourse-provide-full-name-in-mentions in core
+// is a relative symlink (../../discourse-provide-full-name-in-mentions), so it
+// only resolves if both repos are inside the same mount. Binding core alone
+// leaves that symlink dangling inside the container.
+//
+// The image tag is kept in sync with core's own .devcontainer/devcontainer.json.
+// The named volumes match core's too, so a container started from either repo
+// shares one Postgres/Redis/node_modules.
+{
+  "name": "discourse-provide-full-name-in-mentions",
+  "image": "docker.io/discourse/discourse_dev:20260812-0036",
+
+  "workspaceMount": "source=${localWorkspaceFolder}/..,target=/workspace,type=bind",
+  "workspaceFolder": "/workspace/discourse",
+
+  "mounts": [
+    "source=discourse-node_modules,target=/workspace/discourse/node_modules,type=volume",
+    "source=discourse-pg,target=/shared/postgres_data,type=volume",
+    "source=discourse-redis,target=/shared/redis,type=volume"
+  ],
+
+  "postStartCommand": "./.devcontainer/scripts/start.rb",
+
+  "forwardPorts": [9292, 3000, 8025, 9229],
+
+  "remoteUser": "discourse",
+  "remoteEnv": {
+    "PGUSER": "discourse",
+    "SELENIUM_FORWARD_DEVTOOLS_TO_PORT": "9229"
+  },
+
+  "customizations": {
+    "vscode": {
+      "extensions": ["Shopify.ruby-lsp", "esbenp.prettier-vscode"]
+    }
+  }
+}
