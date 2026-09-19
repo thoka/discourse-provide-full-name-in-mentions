@@ -1,0 +1,3 @@
+en:
+  site_settings:
+    provide_full_name_in_mentions_enabled: "Add a <code>data-full-name</code> attribute holding the user's or group's full name to @mentions in cooked posts."

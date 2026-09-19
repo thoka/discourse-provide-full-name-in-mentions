@@ -1,0 +1,3 @@
+plugins:
+  provide_full_name_in_mentions_enabled:
+    default: true
