@@ -19,5 +19,8 @@ after_initialize do
     ::PrettyText.singleton_class.prepend(
       ::DiscourseProvideFullNameInMentions::PrettyTextExtension,
     )
+    ::Jobs::ChangeDisplayName.prepend(
+      ::DiscourseProvideFullNameInMentions::ChangeDisplayNameExtension,
+    )
   end
 end

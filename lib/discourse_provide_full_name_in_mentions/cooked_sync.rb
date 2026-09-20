@@ -23,28 +23,82 @@ module DiscourseProvideFullNameInMentions
       end
     end
 
-    # Yields the Result after each batch when a block is given, for progress
-    # reporting. Returns the final Result.
+    # Posts by others mentioning a user are recorded in user_actions, the same
+    # index Jobs::UpdateUsername uses (see its #update_posts).
+    MENTIONED_JOIN = <<~SQL
+      JOIN user_actions AS a ON (a.target_post_id = posts.id AND
+                                 a.action_type = #{UserAction::MENTION})
+    SQL
+
+    # Everything, for the rake task. Yields the Result after each batch when a
+    # block is given, for progress reporting. Returns the final Result.
     def self.call(
       enabled: SiteSetting.provide_full_name_in_mentions_enabled,
       dry_run: false,
       delay: 0,
       &progress
     )
+      run(
+        [Post.where("cooked LIKE ?", "%class=\"mention%")],
+        [PostRevision.where("modifications LIKE ?", "%mention%")],
+        enabled: enabled,
+        dry_run: dry_run,
+        delay: delay,
+        &progress
+      )
+    end
+
+    # Just the content mentioning one user, for the name-change job.
+    def self.for_user(user_id, enabled: SiteSetting.provide_full_name_in_mentions_enabled, dry_run: false)
+      user = User.find_by(id: user_id)
+      return Result.new(0, 0, 0, 0) if user.blank?
+
+      username = user.username_lower
+
+      run(
+        [
+          # Mentions by other people.
+          Post.with_deleted.joins(MENTIONED_JOIN).where("a.user_id = ?", user_id),
+          # Self-mentions are not in user_actions, so they need their own pass;
+          # Jobs::UpdateUsername has the same second query. Restricting to the
+          # user's own posts keeps the LIKE off the whole table.
+          Post
+            .with_deleted
+            .where(user_id: user_id)
+            .where("cooked LIKE ?", "%/u/#{username}\"%"),
+        ],
+        # The username is unchanged by a name change, so it still identifies the
+        # mention. An underscore in a username is a LIKE wildcard, which only
+        # widens the match; the Nokogiri pass narrows it for real.
+        [PostRevision.where("modifications LIKE ?", "%/u/#{username}%")],
+        enabled: enabled,
+        dry_run: dry_run,
+        delay: 0,
+      )
+    end
+
+    def self.run(post_scopes, revision_scopes, enabled:, dry_run:, delay:, &progress)
       result = Result.new(0, 0, 0, 0)
       base = Discourse.base_path.presence
 
-      sync_posts(result, base, enabled, dry_run, delay, &progress)
-      sync_revisions(result, base, enabled, dry_run, delay, &progress)
+      seen = Set.new
+      post_scopes.each do |scope|
+        sync_posts(scope, seen, result, base, enabled, dry_run, delay, &progress)
+      end
+
+      seen = Set.new
+      revision_scopes.each do |scope|
+        sync_revisions(scope, seen, result, base, enabled, dry_run, delay, &progress)
+      end
 
       result
     end
 
-    # Only posts whose cooked already contains a linked mention can need work.
-    def self.sync_posts(result, base, enabled, dry_run, delay)
-      Post
-        .where("cooked LIKE ?", "%class=\"mention%")
-        .find_in_batches(batch_size: BATCH_SIZE) do |posts|
+    def self.sync_posts(scope, seen, result, base, enabled, dry_run, delay)
+      scope.find_in_batches(batch_size: BATCH_SIZE) do |posts|
+          posts = posts.reject { |post| seen.include?(post.id) }
+          posts.each { |post| seen << post.id }
+
           docs = posts.filter_map do |post|
             doc = Nokogiri::HTML5.fragment(post.cooked)
             anchors = doc.css("a.mention, a.mention-group")
@@ -71,13 +125,14 @@ module DiscourseProvideFullNameInMentions
     end
 
     # modifications is a YAML-serialised text column, so matching the full
-    # `class="mention` needs to know how YAML quoted the HTML. Matching the bare
-    # word is quoting-agnostic and gives a superset, which the Nokogiri pass
-    # below narrows down for real.
-    def self.sync_revisions(result, base, enabled, dry_run, delay)
-      PostRevision
-        .where("modifications LIKE ?", "%mention%")
-        .find_in_batches(batch_size: BATCH_SIZE) do |revisions|
+    # `class="mention` would need to know how YAML quoted the HTML. The callers
+    # above match on quoting-agnostic substrings instead, giving a superset that
+    # the Nokogiri pass below narrows down for real.
+    def self.sync_revisions(scope, seen, result, base, enabled, dry_run, delay)
+      scope.find_in_batches(batch_size: BATCH_SIZE) do |revisions|
+          revisions = revisions.reject { |r| seen.include?(r.id) }
+          revisions.each { |r| seen << r.id }
+
           docs =
             revisions.filter_map do |revision|
               versions = revision.modifications["cooked"]
