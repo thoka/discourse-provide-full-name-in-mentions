@@ -24,7 +24,12 @@
   "mounts": [
     "source=discourse-node_modules,target=/workspace/discourse/node_modules,type=volume",
     "source=discourse-pg,target=/shared/postgres_data,type=volume",
-    "source=discourse-redis,target=/shared/redis,type=volume"
+    "source=discourse-redis,target=/shared/redis,type=volume",
+    // Bundler installs to /home/discourse/.bundle/gems, which lives in the
+    // container layer. Without this volume a `bundle install` is lost whenever
+    // the container is recreated. Docker seeds a new named volume from the
+    // image, so the .bundle/config that sets this path is preserved.
+    "source=discourse-bundle,target=/home/discourse/.bundle,type=volume"
   ],
 
   "postStartCommand": "./.devcontainer/scripts/start.rb",
