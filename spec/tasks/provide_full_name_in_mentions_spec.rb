@@ -101,6 +101,60 @@ RSpec.describe "provide_full_name_in_mentions:sync" do
     expect(post.reload.cooked).to eq(after_first)
   end
 
+  describe "post revisions" do
+    # An edit inside the grace period rewrites in place; pushing revised_at past
+    # it is what actually produces a PostRevision.
+    def revise!(post, raw)
+      PostRevisor.new(post).revise!(
+        post.user,
+        { raw: raw },
+        revised_at: post.updated_at + SiteSetting.editing_grace_period + 1.second,
+      )
+      post.reload
+    end
+
+    it "refreshes names in revision history" do
+      post = post_mentioning("first, hi @ada")
+      revise!(post, "second, hi @ada again")
+
+      revision = PostRevision.find_by(post_id: post.id)
+      expect(revision.modifications["cooked"].join).to include("Ada Lovelace")
+
+      ada.update_columns(name: "Ada King")
+      sync
+
+      cooked = revision.reload.modifications["cooked"].join
+      expect(cooked).to include("Ada King")
+      expect(cooked).not_to include("Ada Lovelace")
+    end
+
+    it "backfills revisions cooked before the plugin was installed" do
+      post = legacy_post("first, hi @ada")
+      SiteSetting.provide_full_name_in_mentions_enabled = false
+      revise!(post, "second, hi @ada again")
+      SiteSetting.provide_full_name_in_mentions_enabled = true
+
+      revision = PostRevision.find_by(post_id: post.id)
+      expect(revision.modifications["cooked"].join).not_to include("data-full-name")
+
+      sync
+
+      expect(revision.reload.modifications["cooked"].join).to include('data-full-name="Ada Lovelace"')
+    end
+
+    it "removes the attribute from revisions when disabled" do
+      post = post_mentioning("first, hi @ada")
+      revise!(post, "second, hi @ada again")
+
+      SiteSetting.provide_full_name_in_mentions_enabled = false
+      sync
+
+      expect(PostRevision.find_by(post_id: post.id).modifications["cooked"].join).not_to include(
+        "data-full-name",
+      )
+    end
+  end
+
   it "writes nothing on a dry run" do
     post = legacy_post("hi @ada")
     before = post.cooked

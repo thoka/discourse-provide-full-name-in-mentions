@@ -1,67 +1,146 @@
 # frozen_string_literal: true
 
 module DiscourseProvideFullNameInMentions
-  # Brings data-full-name on already-cooked posts in line with the database,
+  # Brings data-full-name on already-cooked content in line with the database,
   # without rebaking.
   #
   # Rebaking re-runs the whole pipeline -- oneboxes, the post analyzer, image
   # processing -- to change a single attribute. Core declines to do that for the
   # equivalent username and display-name updates and patches the cooked HTML
   # with Nokogiri instead; see the comment above
-  # Jobs::UpdateUsername#update_cooked. This takes the same approach.
+  # Jobs::UpdateUsername#update_cooked. This takes the same approach, and like
+  # both core jobs it covers post revisions as well as posts.
   #
   # It syncs toward whatever a rebake would produce right now: enabled, every
   # resolvable mention gets a current data-full-name; disabled, the attribute is
-  # removed. Posts needing no change are never written.
+  # removed. Records needing no change are never written.
   module CookedSync
     BATCH_SIZE = 500
 
-    Result = Struct.new(:scanned, :changed)
+    Result = Struct.new(:posts_scanned, :posts_changed, :revisions_scanned, :revisions_changed) do
+      def to_s
+        "posts #{posts_changed}/#{posts_scanned}, revisions #{revisions_changed}/#{revisions_scanned}"
+      end
+    end
 
-    # Yields a Result after each batch when a block is given, for progress
+    # Yields the Result after each batch when a block is given, for progress
     # reporting. Returns the final Result.
-    def self.call(enabled: SiteSetting.provide_full_name_in_mentions_enabled, dry_run: false, delay: 0)
-      result = Result.new(0, 0)
+    def self.call(
+      enabled: SiteSetting.provide_full_name_in_mentions_enabled,
+      dry_run: false,
+      delay: 0,
+      &progress
+    )
+      result = Result.new(0, 0, 0, 0)
       base = Discourse.base_path.presence
 
-      # Only posts already containing a linked mention can need anything.
-      Post
-        .where("cooked LIKE ?", "%class=\"mention%")
-        .find_in_batches(batch_size: BATCH_SIZE) do |posts|
-          process_batch(posts, result, base, enabled, dry_run)
-          yield result if block_given?
-          sleep delay if delay > 0
-        end
+      sync_posts(result, base, enabled, dry_run, delay, &progress)
+      sync_revisions(result, base, enabled, dry_run, delay, &progress)
 
       result
     end
 
-    def self.process_batch(posts, result, base, enabled, dry_run)
-      parsed = []
+    # Only posts whose cooked already contains a linked mention can need work.
+    def self.sync_posts(result, base, enabled, dry_run, delay)
+      Post
+        .where("cooked LIKE ?", "%class=\"mention%")
+        .find_in_batches(batch_size: BATCH_SIZE) do |posts|
+          docs = posts.filter_map do |post|
+            doc = Nokogiri::HTML5.fragment(post.cooked)
+            anchors = doc.css("a.mention, a.mention-group")
+            anchors.empty? ? nil : [post, [[doc, anchors]]]
+          end
+
+          apply_to_batch(docs, base, enabled) do |post, pairs, touched|
+            result.posts_scanned += 1
+            next unless touched
+
+            result.posts_changed += 1
+            next if dry_run
+
+            begin
+              post.update_columns(cooked: pairs.first[0].to_html)
+            rescue => e
+              Discourse.warn_exception(e, message: "Failed to update post with id #{post.id}")
+            end
+          end
+
+          yield result if block_given?
+          sleep delay if delay > 0
+        end
+    end
+
+    # modifications is a YAML-serialised text column, so matching the full
+    # `class="mention` needs to know how YAML quoted the HTML. Matching the bare
+    # word is quoting-agnostic and gives a superset, which the Nokogiri pass
+    # below narrows down for real.
+    def self.sync_revisions(result, base, enabled, dry_run, delay)
+      PostRevision
+        .where("modifications LIKE ?", "%mention%")
+        .find_in_batches(batch_size: BATCH_SIZE) do |revisions|
+          docs =
+            revisions.filter_map do |revision|
+              versions = revision.modifications["cooked"]
+              next if versions.blank?
+
+              pairs =
+                versions.map do |cooked|
+                  next if cooked.blank?
+                  doc = Nokogiri::HTML5.fragment(cooked)
+                  anchors = doc.css("a.mention, a.mention-group")
+                  anchors.empty? ? nil : [doc, anchors]
+                end
+
+              pairs.any? ? [revision, pairs] : nil
+            end
+
+          apply_to_batch(docs, base, enabled) do |revision, pairs, touched|
+            result.revisions_scanned += 1
+            next unless touched
+
+            result.revisions_changed += 1
+            next if dry_run
+
+            begin
+              versions = revision.modifications["cooked"]
+              pairs.each_with_index { |pair, i| versions[i] = pair[0].to_html if pair }
+              revision.modifications["cooked"] = versions
+              revision.save!
+            rescue => e
+              Discourse.warn_exception(
+                e,
+                message: "Failed to update post revision with id #{revision.id}",
+              )
+            end
+          end
+
+          yield result if block_given?
+          sleep delay if delay > 0
+        end
+    end
+
+    # docs is [[record, [[doc, anchors], ...]], ...]. Looks every handle in the
+    # batch up at once, then yields each record with whether anything changed.
+    def self.apply_to_batch(docs, base, enabled)
+      return if docs.empty?
+
       handles = { user: Set.new, group: Set.new }
-
-      posts.each do |post|
-        doc = Nokogiri::HTML5.fragment(post.cooked)
-        anchors = doc.css("a.mention, a.mention-group")
-        next if anchors.empty?
-
-        parsed << [post, doc, anchors]
-        anchors.each do |a|
-          kind, handle = mention_target(a["href"], base)
-          handles[kind] << handle if kind
+      docs.each do |_record, pairs|
+        pairs.each do |pair|
+          next if pair.nil?
+          pair[1].each do |a|
+            kind, handle = mention_target(a["href"], base)
+            handles[kind] << handle if kind
+          end
         end
       end
 
-      return if parsed.empty?
-
       names = lookup_full_names(handles)
 
-      parsed.each do |post, doc, anchors|
-        result.scanned += 1
-        next unless apply!(anchors, names, base, enabled)
-
-        result.changed += 1
-        post.update_columns(cooked: doc.to_html) unless dry_run
+      docs.each do |record, pairs|
+        touched =
+          pairs.count { |pair| pair && apply!(pair[1], names, base, enabled) }.positive?
+        yield record, pairs, touched
       end
     end
 

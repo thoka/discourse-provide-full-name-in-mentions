@@ -22,7 +22,7 @@ task "provide_full_name_in_mentions:sync", [:delay] => :environment do |_, args|
       enabled: enabled,
       dry_run: dry_run,
       delay: args[:delay].to_i,
-    ) { |r| print "\rscanned #{r.scanned}, #{verb} #{r.changed}"; $stdout.flush }
+    ) { |r| print "\r#{r}"; $stdout.flush }
 
-  puts "\nDone. Scanned #{result.scanned} posts, #{verb} #{result.changed}."
+  puts "\nDone (#{verb}): #{result}."
 end
