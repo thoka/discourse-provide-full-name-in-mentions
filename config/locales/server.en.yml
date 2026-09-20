@@ -1,3 +1,6 @@
 en:
   site_settings:
-    provide_full_name_in_mentions_enabled: "Add a <code>data-full-name</code> attribute holding the user's or group's full name to @mentions in cooked posts."
+    provide_full_name_in_mentions_enabled: "Add a <code>data-full-name</code> attribute holding the user's or group's full name to @mentions in cooked posts. Existing posts keep whatever was baked into them: run <code>rake provide_full_name_in_mentions:sync</code> after changing this setting to bring them in line."
+  dashboard:
+    problem:
+      mention_full_names_not_collected: "Full names in mentions are enabled, but this site does not collect names, so mentions have no name to show. Set <a href='%{base_path}/admin/site_settings/category/all_results?filter=full_name_requirement'>full_name_requirement</a> to required or optional at signup, then run <code>rake provide_full_name_in_mentions:sync</code>."
