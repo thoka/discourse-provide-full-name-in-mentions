@@ -1,0 +1,5 @@
+[tools]
+# Matches core's Gemfile ("~> 3.4") and Gemfile.lock (3.4.7). Enough to run
+# rubocop, stree and syntax checks on the host; rspec still needs the dev
+# container, which has Postgres and the full bundle.
+ruby = "3.4.7"

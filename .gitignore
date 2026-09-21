@@ -1,1 +1,3 @@
-mise.toml
+# Personal mise overrides; mise.toml itself is committed.
+mise.local.toml
+.mise.local.toml
